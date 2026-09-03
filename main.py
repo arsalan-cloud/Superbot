@@ -4,7 +4,7 @@ import aiohttp
 import yt_dlp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -28,19 +28,16 @@ class CalculatorStates(StatesGroup):
 class DownloaderStates(StatesGroup):
     waiting_for_url = State()
 
-# --- کیبورد اصلی ---
+# --- کیبورد ثابت پایین صفحه (Reply Keyboard) ---
 def main_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 دانلودر حرفه‌ای (یوتیوب/تیک‌تاک/اینستاگرام)", callback_data="menu_downloader")],
-        [InlineKeyboardButton(text="💱 تبدیل ارزها", callback_data="menu_currency"),
-         InlineKeyboardButton(text="🧮 ماشین حساب پیشرفته", callback_data="menu_calc")],
-        [InlineKeyboardButton(text="ℹ️ راهنما و درباره ما", callback_data="menu_help")]
-    ])
-
-def back_to_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="back_home")]
-    ])
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📥 دانلودر شبکه‌های اجتماعی")],
+            [KeyboardButton(text="💱 نرخ ارز"), KeyboardButton(text="🧮 ماشین حساب پیشرفته")],
+            [KeyboardButton(text="ℹ️ راهنما و درباره ما")]
+        ],
+        resize_keyboard=True
+    )
 
 # --- هندلر استارت ---
 @router.message(CommandStart())
@@ -52,34 +49,23 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=main_menu()
     )
 
-@router.callback_query(F.data == "back_home")
-async def back_home_handler(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text(
-        "منوی اصلی ربات:",
-        reply_markup=main_menu()
-    )
-    await callback.answer()
-
 # ==========================================
 # بخش دانلودر پیشرفته
 # ==========================================
-@router.callback_query(F.data == "menu_downloader")
-async def downloader_menu(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "📥 دانلودر شبکه‌های اجتماعی")
+async def downloader_menu(message: Message, state: FSMContext):
     await state.set_state(DownloaderStates.waiting_for_url)
-    await callback.message.edit_text(
+    await message.answer(
         "📥 **بخش دانلود مدیا**\n\n"
         "لینک ویدیو یا پست مورد نظر خود (از یوتیوب، تیک‌تاک و...) را ارسال کنید:",
-        reply_markup=back_to_menu(),
         parse_mode="Markdown"
     )
-    await callback.answer()
 
 @router.message(DownloaderStates.waiting_for_url)
 async def process_download_url(message: Message, state: FSMContext):
     url = message.text.strip()
     if not url.startswith("http"):
-        await message.answer("⚠️ لطفاً یک لینک معتبر ارسال کنید که با http شروع شود.", reply_markup=back_to_menu())
+        await message.answer("⚠️ لطفاً یک لینک معتبر ارسال کنید که با http شروع شود.", reply_markup=main_menu())
         return
 
     processing_msg = await message.answer("⏳ در حال پردازش و دانلود مدیا، لطفاً صبور باشید...")
@@ -93,14 +79,14 @@ async def process_download_url(message: Message, state: FSMContext):
             "❌ **محدودیت اینستاگرام:**\n\n"
             "اینستاگرام دسترسی به این پست را به صورت ناشناس و از روی سرورهای ابری مسدود کرده است. "
             "لطفاً لینک ویدیوهای **یوتیوب** یا **تیک‌تاک** را ارسال کنید.",
-            reply_markup=back_to_menu(),
+            reply_markup=main_menu(),
             parse_mode="Markdown"
         )
         await state.clear()
         return
 
     if not media_result:
-        await message.answer("❌ متأسفانه دانلود از این لینک امکان‌پذیر نبود یا لینک نامعتبر است.", reply_markup=back_to_menu())
+        await message.answer("❌ متأسفانه دانلود از این لینک امکان‌پذیر نبود یا لینک نامعتبر است.", reply_markup=main_menu())
         await state.clear()
         return
 
@@ -188,24 +174,22 @@ async def download_media_engine(url: str):
     return None
 
 # ==========================================
-# بخش تبدیل ارز
+# بخش تبدیل ارز (نرخ ارز)
 # ==========================================
-@router.callback_query(F.data == "menu_currency")
-async def currency_menu(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "💱 نرخ ارز")
+async def currency_menu(message: Message, state: FSMContext):
     await state.set_state(ConverterStates.waiting_for_amount)
-    await callback.message.edit_text(
+    await message.answer(
         "💱 **تبدیل ارز**\n\n"
         "لطفاً مبلغ مورد نظر به تومان را وارد کنید تا معادل تقریبی آن به دلار محاسبه شود:",
-        reply_markup=back_to_menu(),
         parse_mode="Markdown"
     )
-    await callback.answer()
 
 @router.message(ConverterStates.waiting_for_amount)
 async def process_currency(message: Message, state: FSMContext):
     text = message.text.strip().replace(",", "")
     if not text.isdigit():
-        await message.answer("⚠️ لطفاً فقط مقدار عددی وارد کنید:", reply_markup=back_to_menu())
+        await message.answer("⚠️ لطفاً فقط مقدار عددی وارد کنید:", reply_markup=main_menu())
         return
     
     toman = int(text)
@@ -222,48 +206,45 @@ async def process_currency(message: Message, state: FSMContext):
 # ==========================================
 # بخش ماشین حساب پیشرفته
 # ==========================================
-@router.callback_query(F.data == "menu_calc")
-async def calc_menu(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "🧮 ماشین حساب پیشرفته")
+async def calc_menu(message: Message, state: FSMContext):
     await state.set_state(CalculatorStates.waiting_for_expression)
-    await callback.message.edit_text(
+    await message.answer(
         "🧮 **ماشین حساب**\n\n"
         "عبارت ریاضی خود را بفرستید (مثال: `125 * 4 + 50`):",
-        reply_markup=back_to_menu(),
         parse_mode="Markdown"
     )
-    await callback.answer()
 
 @router.message(CalculatorStates.waiting_for_expression)
 async def process_calc(message: Message, state: FSMContext):
     expr = message.text.strip()
     allowed_chars = set("0123456789+-*/(). ")
     if not all(c in allowed_chars for c in expr):
-        await message.answer("❌ عبارت وارد شده نامعتبر است.", reply_markup=back_to_menu())
+        await message.answer("❌ عبارت وارد شده نامعتبر است.", reply_markup=main_menu())
         return
 
     try:
         result = eval(expr)
         await message.answer(f"🧮 نتیجه محاسبه:\n`{expr} = {result}`", reply_markup=main_menu(), parse_mode="Markdown")
     except Exception:
-        await message.answer("❌ خطا در محاسبه!", reply_markup=back_to_menu())
+        await message.answer("❌ خطا در محاسبه!", reply_markup=main_menu())
     
     await state.clear()
 
 # ==========================================
 # راهنما
 # ==========================================
-@router.callback_query(F.data == "menu_help")
-async def help_menu(callback: CallbackQuery):
-    await callback.message.edit_text(
+@router.message(F.text == "ℹ️ راهنما و درباره ما")
+async def help_menu(message: Message):
+    await message.answer(
         "ℹ️ **راهنمای ربات**\n\n"
         "• این ربات روی سرور ابری Render فعال است.\n"
         "• برای شروع مجدد دستور /start را ارسال کنید.",
-        reply_markup=back_to_menu(),
+        reply_markup=main_menu(),
         parse_mode="Markdown"
     )
-    await callback.answer()
 
-# --- سرور وب کوچک برای گول زدن رندر (باز نگه داشتن پورت) ---
+# --- سرور وب کوچک برای باز نگه داشتن پورت رندر ---
 async def handle_ping(request):
     return web.Response(text="Bot is running and alive!")
 
@@ -273,7 +254,6 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # رندر پورت را از متغیر محیطی PORT می‌خواند (پیش‌فرض 10000)
     port = int(os.getenv("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
@@ -282,9 +262,7 @@ async def start_web_server():
 # --- اجرای اصلی ربات و سرور وب به صورت همزمان ---
 async def main():
     print("Bot is starting...")
-    # ابتدا وب‌سایت ساختگی را بالا می‌آوریم تا پورت رندر پر شود
     await start_web_server()
-    # سپس ربات تلگرام را استارت می‌کنیم
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
