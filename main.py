@@ -21,6 +21,12 @@ import yt_dlp
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
 
+# ساخت خودکار فایل cookies.txt از متغیر محیطی Render
+COOKIES_ENV = os.getenv("YOUTUBE_COOKIES")
+if COOKIES_ENV:
+    with open("cookies.txt", "w", encoding="utf-8") as f:
+        f.write(COOKIES_ENV)
+
 if not TOKEN:
     raise ValueError("خطا: توکن ربات (BOT_TOKEN) ست نشده است.")
 
@@ -136,7 +142,7 @@ async def download_tiktok_api(url: str, output_path: str) -> bool:
             logging.error(f"TikTok API error: {e}")
     return False
 
-# --- دانلود پشتیبان قدرتمند yt-dlp با دور زدن چالش‌های سرور ابری ---
+# --- دانلود پشتیبانyt-dlp با استفاده از کوکی احراز هویت ---
 def download_fallback_sync(url: str, output_prefix: str):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -152,6 +158,9 @@ def download_fallback_sync(url: str, output_prefix: str):
             }
         }
     }
+
+    if os.path.exists("cookies.txt"):
+        ydl_opts['cookiefile'] = "cookies.txt"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -414,7 +423,7 @@ async def process_video_download(message: types.Message):
         if not download_success and "tiktok.com" in url:
             download_success = await download_tiktok_api(url, file_path)
 
-        # ۳. استفاده از yt-dlp هوشمند با کلاینت سفارشی
+        # ۳. استفاده از yt-dlp هوشمند همراه با کوکی
         if not download_success:
             downloaded = await asyncio.to_thread(download_fallback_sync, url, f"downloads/{file_id}_{message.message_id}")
             if downloaded and os.path.exists(downloaded):
