@@ -2,6 +2,7 @@ import os
 import asyncio
 import aiohttp
 import yt_dlp
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart
@@ -87,7 +88,6 @@ async def process_download_url(message: Message, state: FSMContext):
 
     await bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)
 
-    # مدیریت خطای محدودیت اینستاگرام روی سرور ابری
     if isinstance(media_result, dict) and media_result.get("error") == "instagram_restricted":
         await message.answer(
             "❌ **محدودیت اینستاگرام:**\n\n"
@@ -132,10 +132,7 @@ async def process_download_url(message: Message, state: FSMContext):
     await state.clear()
 
 async def download_media_engine(url: str):
-    """ موتور دانلود ترکیبی با مدیریت خطای اینستاگرام """
     is_instagram = "instagram.com" in url
-
-    # 1. تلاش از طریق Cobalt API
     cobalt_url = "https://api.cobalt.tools/"
     payload = {
         "url": url,
@@ -163,11 +160,9 @@ async def download_media_engine(url: str):
     except Exception as e:
         print(f"Cobalt API error: {e}")
 
-    # اگر لینک اینستاگرام بود و از طریق API نشد، از ادامه درخواست مستقیم جلوگیری می‌کنیم تا ارور لاگ ندهد
     if is_instagram:
         return {"error": "instagram_restricted"}
 
-    # 2. پشتیبان دوم: yt-dlp برای سایر سایت‌ها مثل یوتیوب
     def ytdlp_download():
         ydl_opts = {
             'format': 'best[ext=mp4]/best',
@@ -268,9 +263,28 @@ async def help_menu(callback: CallbackQuery):
     )
     await callback.answer()
 
-# --- اجرای اصلی ربات ---
+# --- سرور وب کوچک برای گول زدن رندر (باز نگه داشتن پورت) ---
+async def handle_ping(request):
+    return web.Response(text="Bot is running and alive!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # رندر پورت را از متغیر محیطی PORT می‌خواند (پیش‌فرض 10000)
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Dummy web server running on port {port}")
+
+# --- اجرای اصلی ربات و سرور وب به صورت همزمان ---
 async def main():
     print("Bot is starting...")
+    # ابتدا وب‌سایت ساختگی را بالا می‌آوریم تا پورت رندر پر شود
+    await start_web_server()
+    # سپس ربات تلگرام را استارت می‌کنیم
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
