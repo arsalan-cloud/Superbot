@@ -3,6 +3,11 @@ import asyncio
 import logging
 import re
 import subprocess
+
+# فعال‌سازی خودکار ffmpeg در محیط ابری Render
+import imageio_ffmpeg
+os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.types import FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -80,9 +85,10 @@ def rates_inline_keyboard():
         ]
     ])
 
+# --- تابع دانلود ویدیو با پشتیبانی از بالاترین کیفیت و کوکی ---
 def download_video_sync(url: str, output_path: str):
     ydl_opts = {
-        'format': 'best',  # اصلاح فرمت برای اجرا بدون نیاز به ffmpeg در هاست ابری
+        'format': 'best/bestvideo+bestaudio',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
@@ -344,7 +350,7 @@ async def process_video_download(message: types.Message):
 
     except Exception as e:
         logging.error(f"Download error: {e}")
-        await status_msg.edit_text("❌ دانلود ناموفق بود. ممکن است ویدیو خصوصی باشد یا لایو/موزیک‌پارتکشن باشد.")
+        await status_msg.edit_text("❌ دانلود ناموفق بود. ممکن است ویدیو خصوصی باشد یا لینک معتبر نباشد.")
 
 # --- سرور بررسی سلامت (Health Check برای Render) ---
 async def handle_health(request):
