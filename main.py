@@ -29,7 +29,6 @@ dp = Dispatcher()
 
 URL_PATTERN = re.compile(r'https?://(www\.)?(instagram\.com|tiktok\.com|youtube\.com|youtu\.be)/.+')
 
-# مسیر دقیق فایل کوکی در پوشه پروژه
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIE_PATH = os.path.join(BASE_DIR, "cookies.txt")
 
@@ -39,7 +38,6 @@ class CurrencyState(StatesGroup):
     waiting_for_to_curr = State()
     waiting_for_amount = State()
 
-# --- لیست ارزهای پشتیبانی‌شده ---
 CURRENCIES = {
     "AFN": "افغانی 🇦🇫",
     "USD": "دلار آمریکا 💵",
@@ -90,12 +88,37 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- تابع دانلود ویدیو ---
+# --- دانلود از طریق API پشتیبان (Cobalt) در صورت بلاک بودن IP ---
+async def download_via_cobalt(url: str, output_path: str) -> bool:
+    api_url = "https://api.cobalt.tools/api/json"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {"url": url, "videoQuality": "720"}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(api_url, json=payload, headers=headers, timeout=20) as resp:
+                if resp.status != 200:
+                    return False
+                data = await resp.json()
+                video_link = data.get("url")
+                if not video_link:
+                    return False
+                
+                async with session.get(video_link) as file_resp:
+                    if file_resp.status == 200:
+                        with open(output_path, "wb") as f:
+                            f.write(await file_resp.read())
+                        return True
+    except Exception as e:
+        logging.error(f"Cobalt API fallback error: {e}")
+    return False
+
+# --- تابع دانلود با yt-dlp ---
 def download_video_sync(url: str, output_prefix: str):
     has_cookie = os.path.exists(COOKIE_PATH)
-    if has_cookie:
-        logging.info("--> File cookies.txt found! Using cookies for YouTube authentication.")
-
     ydl_opts = {
         'format': 'bestvideo+bestaudio/best/b',
         'outtmpl': f"{output_prefix}.%(ext)s",
@@ -105,14 +128,12 @@ def download_video_sync(url: str, output_prefix: str):
         'ffmpeg_location': os.path.dirname(ffmpeg_exe_path),
         'merge_output_format': 'mp4',
         'cookiefile': COOKIE_PATH if has_cookie else None,
-    }
-
-    if not has_cookie:
-        ydl_opts['extractor_args'] = {
+        'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'ios']
+                'player_client': ['android', 'mweb']
             }
         }
+    }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -120,7 +141,7 @@ def download_video_sync(url: str, output_prefix: str):
     files = glob.glob(f"{output_prefix}.*")
     return files[0] if files else None
 
-# --- دریافت نرخ‌های زنده از اینترنت ---
+# --- دریافت نرخ‌های زنده ---
 async def get_live_rates():
     rates = {}
     timeout = ClientTimeout(total=10)
@@ -142,7 +163,7 @@ async def get_live_rates():
 
     return rates
 
-# --- هندلرهای منو و دستورات اصلی ---
+# --- هندلرهای عمومی ---
 @dp.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
     await state.clear()
@@ -173,7 +194,7 @@ async def about_me_btn(message: types.Message):
         "▪️ **تاریخ تولد:** ۲۸ مهر ۱۳۷۹ (19 October 2000)\n"
         "▪️ **تحصیلات:** دیپلم فناوری اطلاعات (کامپیوتر)\n"
         "▪️ **شغل:** روزنامه‌نگار مستقل و تولیدکننده محتوای ویدیویی در یوتیوب 🎥\n\n"
-        "🛠 این ربات همه‌کاره با زبان پایتون و کتابخانه‌های مدرن طراحی شده است تا ابزارهای کاربردی مانند دانلودر، نرخ ارز زنده و ماشین‌حساب را در اختیار شما قرار دهد."
+        "🛠 این ربات همه‌کاره با زبان پایتون و کتابخانه‌های مدرن طراحی شده است."
     )
     await message.answer(about_text, parse_mode="Markdown")
 
@@ -356,7 +377,7 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
-# --- مدیریت دانلود ویدیو ---
+# --- مدیریت هوشمند دانلود ویدیو (با سیستم پشتیبان Cobalt) ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
@@ -365,12 +386,24 @@ async def process_video_download(message: types.Message):
     file_id = message.from_user.id
     os.makedirs("downloads", exist_ok=True)
     output_prefix = f"downloads/{file_id}_{message.message_id}"
-    file_path = None
-    
+    file_path = f"{output_prefix}.mp4"
+    download_success = False
+
     try:
-        file_path = await asyncio.to_thread(download_video_sync, url, output_prefix)
-        
-        if file_path and os.path.exists(file_path):
+        # ۱. ابتدا تلاش برای دانلود با yt-dlp
+        try:
+            downloaded = await asyncio.to_thread(download_video_sync, url, output_prefix)
+            if downloaded and os.path.exists(downloaded):
+                file_path = downloaded
+                download_success = True
+        except Exception as yt_err:
+            logging.warning(f"yt-dlp failed ({yt_err}), switching to Cobalt API...")
+
+        # ۲. در صورت بروز هرگونه خطای ضدربات یوتیوب، سوئیچ به API پشتیبان
+        if not download_success:
+            download_success = await download_via_cobalt(url, file_path)
+
+        if download_success and os.path.exists(file_path):
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             if file_size_mb > 50:
                 await status_msg.edit_text("❌ حجم ویدیو بیشتر از ۵۰ مگابایت است (محدودیت تلگرام).")
@@ -379,19 +412,19 @@ async def process_video_download(message: types.Message):
             await message.answer_video(video=FSInputFile(file_path), caption="✅ دانلود با موفقیت انجام شد!")
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ خطایی در دانلود فایل رخ داد. لینک نامعتبر است یا ویدیو در دسترس نیست.")
+            await status_msg.edit_text("❌ خطایی در دریافت ویدیو رخ داد. لطفا دوباره تلاش کنید.")
 
     except Exception as e:
         logging.error(f"Download error: {e}")
-        await status_msg.edit_text(f"❌ دانلود ناموفق بود.\nجزییات خطا: {str(e)[:100]}")
+        await status_msg.edit_text("❌ دانلود ناموفق بود. لطفاً مجدداً تلاش کنید.")
     finally:
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
-            except Exception as clean_err:
-                logging.error(f"Error deleting temporary file: {clean_err}")
+            except Exception:
+                pass
 
-# --- سرور بررسی سلامت (Health Check برای Render) ---
+# --- سرور Health Check برای Render ---
 async def handle_health(request):
     return web.Response(text="Superbot server is alive and running!")
 
