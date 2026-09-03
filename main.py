@@ -85,43 +85,76 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- دانلود هوشمند بدون کوکی از طریق API واسط (Cobalt API Engine) ---
-async def download_via_api(url: str, output_path: str) -> bool:
-    api_endpoints = [
-        "https://api.cobalt.tools/",
-        "https://cobalt-api.kwi.fi/",
-        "https://co.wuk.sh/"
-    ]
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
-    payload = {
-        "url": url,
-        "videoQuality": "720"
-    }
+# --- استخراج ویدیو یوتیوب بدون کوکی با استفاده از Piped API ---
+def extract_youtube_id(url: str) -> str:
+    pattern = r'(?:v=|\/([0-9A-Za-z_-]{11}).*|youtu\.be\/)([0-9A-Za-z_-]{11})'
+    match = re.search(pattern, url)
+    if match:
+        return match.group(1) or match.group(2)
+    return None
 
-    timeout = ClientTimeout(total=30)
+async def download_youtube_piped(url: str, output_path: str) -> bool:
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        return False
+
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.yt",
+        "https://pipedapi.drgns.space",
+        "https://piped-api.garudalinux.org"
+    ]
+
+    timeout = ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        for ep in api_endpoints:
+        for instance in piped_instances:
             try:
-                async with session.post(ep, json=payload, headers=headers) as resp:
-                    if resp.status in [200, 201]:
+                async with session.get(f"{instance}/streams/{video_id}") as resp:
+                    if resp.status == 200:
                         data = await resp.json()
-                        download_url = data.get("url")
-                        if download_url:
-                            async with session.get(download_url) as dl_resp:
-                                if dl_resp.status == 200:
+                        streams = data.get("videoStreams", [])
+                        
+                        # انتخاب مناسب‌ترین کیفیت ویدیو دارای صدا
+                        dl_url = None
+                        for s in streams:
+                            if s.get("videoOnly") is False and s.get("quality") in ["720p", "480p", "360p"]:
+                                dl_url = s.get("url")
+                                break
+                        
+                        if not dl_url and streams:
+                            dl_url = streams[0].get("url")
+
+                        if dl_url:
+                            async with session.get(dl_url) as video_resp:
+                                if video_resp.status == 200:
                                     with open(output_path, "wb") as f:
-                                        f.write(await dl_resp.read())
+                                        f.write(await video_resp.read())
                                     return True
             except Exception as e:
-                logging.error(f"API Endpoint {ep} failed: {e}")
+                logging.error(f"Piped instance {instance} failed: {e}")
                 continue
     return False
 
-# --- دانلود زاپاس با yt-dlp (در صورت نیاز) ---
+# --- استخراج ویدیو تیک‌تاک بدون کوکی با TikWM API ---
+async def download_tiktok_api(url: str, output_path: str) -> bool:
+    timeout = ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.post("https://www.tikwm.com/api/", data={"url": url}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    dl_url = data.get("data", {}).get("play")
+                    if dl_url:
+                        async with session.get(f"https://www.tikwm.com{dl_url}" if dl_url.startswith("/") else dl_url) as v_resp:
+                            if v_resp.status == 200:
+                                with open(output_path, "wb") as f:
+                                    f.write(await v_resp.read())
+                                return True
+        except Exception as e:
+            logging.error(f"TikTok API error: {e}")
+    return False
+
+# --- دانلود زاپاس با yt-dlp (مخصوص اینستاگرام) ---
 def download_fallback_sync(url: str, output_prefix: str):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -375,11 +408,11 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
-# --- مدیریت دانلود ویدیو با ترکیب API و پشتیبان ---
+# --- مدیریت دانلود هوشمند ویدیو ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
-    status_msg = await message.answer("⏳ در حال استخراج و دانلود ویدیو بدون کوکی...")
+    status_msg = await message.answer("⏳ در حال پردازش و استخراج ویدیو...")
     
     file_id = message.from_user.id
     os.makedirs("downloads", exist_ok=True)
@@ -387,10 +420,15 @@ async def process_video_download(message: types.Message):
     download_success = False
 
     try:
-        # ۱. تلاش اول: استخراج از API واسط بدون نیاز به کوکی
-        download_success = await download_via_api(url, file_path)
+        # ۱. بررسی یوتیوب با Piped API
+        if "youtube.com" in url or "youtu.be" in url:
+            download_success = await download_youtube_piped(url, file_path)
+        
+        # ۲. بررسی تیک‌تاک با TikWM API
+        elif "tiktok.com" in url:
+            download_success = await download_tiktok_api(url, file_path)
 
-        # ۲. تلاش دوم (پشتیبان): استفاده از yt-dlp محلی
+        # ۳. پشتیبان yt-dlp برای اینستاگرام و بقیه پلتفرم‌ها
         if not download_success:
             downloaded = await asyncio.to_thread(download_fallback_sync, url, f"downloads/{file_id}_{message.message_id}")
             if downloaded and os.path.exists(downloaded):
@@ -400,7 +438,7 @@ async def process_video_download(message: types.Message):
         if download_success and os.path.exists(file_path):
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             if file_size_mb > 50:
-                await status_msg.edit_text("❌ حجم ویدیو بیشتر از ۵۰ مگابایت است (محدودیت تلگرام).")
+                await status_msg.edit_text("❌ حجم ویدیو بیشتر از ۵0 مگابایت است (محدودیت تلگرام).")
                 return
 
             await message.answer_video(video=FSInputFile(file_path), caption="✅ دانلود با موفقیت انجام شد!")
