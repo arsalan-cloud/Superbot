@@ -85,60 +85,45 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- استخراج آیدی ویدیو یوتیوب ---
-def extract_youtube_id(url: str):
-    match = re.search(r'(?:v=|\/|youtu\.be\/)([a-zA-Z0-9_-]{11})', url)
-    return match.group(1) if match else None
-
-# --- دانلود مستقیم بدون نیاز به کوکی از طریق سرویس‌های واسط Piped ---
-async def download_via_piped(url: str, output_path: str) -> bool:
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        return False
-        
-    instances = [
-        f"https://api.piped.yt/streams/{video_id}",
-        f"https://pipedapi.kavin.rocks/streams/{video_id}",
-        f"https://piped-api.garudalinux.org/streams/{video_id}"
+# --- موتور دانلود اختصاصی Cobalt API (مخصوص دور زدن بن آی‌پی یوتیوب) ---
+async def download_via_cobalt(url: str, output_path: str) -> bool:
+    endpoints = [
+        "https://api.cobalt.tools/",
+        "https://cobalt-api.kwi.fi/"
     ]
-    
-    timeout = ClientTimeout(total=20)
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    payload = {
+        "url": url,
+        "videoQuality": "720"
+    }
+
+    timeout = ClientTimeout(total=25)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        for api_endpoint in instances:
+        for ep in endpoints:
             try:
-                async with session.get(api_endpoint) as resp:
-                    if resp.status == 200:
+                async with session.post(ep, json=payload, headers=headers) as resp:
+                    if resp.status in [200, 201]:
                         data = await resp.json()
-                        streams = data.get("videoStreams", [])
-                        
-                        stream_url = None
-                        # پیدا کردن بهترین لینک مستقیم با فرمت MP4
-                        for s in streams:
-                            if not s.get("videoOnly") and "mp4" in s.get("mimeType", "").lower():
-                                stream_url = s.get("url")
-                                break
-                        
-                        if not stream_url and streams:
-                            for s in streams:
-                                if "mp4" in s.get("mimeType", "").lower():
-                                    stream_url = s.get("url")
-                                    break
-                                    
-                        if stream_url:
-                            async with session.get(stream_url) as file_resp:
-                                if file_resp.status == 200:
+                        download_url = data.get("url")
+                        if download_url:
+                            async with session.get(download_url) as dl_resp:
+                                if dl_resp.status == 200:
                                     with open(output_path, "wb") as f:
-                                        f.write(await file_resp.read())
+                                        f.write(await dl_resp.read())
                                     return True
             except Exception as e:
-                logging.error(f"Piped instance failed: {e}")
+                logging.error(f"Cobalt endpoint {ep} error: {e}")
                 continue
     return False
 
-# --- دانلود با yt-dlp ---
+# --- موتور دانلود yt-dlp با کلاینت iOS (مخصوص اینستاگرام، تیک‌تاک و رزرو یوتیوب) ---
 def download_video_sync(url: str, output_prefix: str):
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best/b',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': f"{output_prefix}.%(ext)s",
         'quiet': True,
         'no_warnings': True,
@@ -147,7 +132,7 @@ def download_video_sync(url: str, output_prefix: str):
         'merge_output_format': 'mp4',
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'mweb']
+                'player_client': ['ios', 'android']
             }
         }
     }
@@ -394,11 +379,11 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
-# --- مدیریت دانلود ویدیو ---
+# --- مدیریت دانلود ویدیو (با هوش خودکار برای دور زدن فیلترهای ضدربات) ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
-    status_msg = await message.answer("⏳ در حال دریافت و بررسی لینک ویدیو...")
+    status_msg = await message.answer("⏳ در حال دریافت و دانلود ویدیو...")
     
     file_id = message.from_user.id
     os.makedirs("downloads", exist_ok=True)
@@ -407,11 +392,11 @@ async def process_video_download(message: types.Message):
     download_success = False
 
     try:
-        # ۱. ابتدا دانلود مستقیم با Piped برای دور زدن کامل بن IP یوتیوب
+        # ۱. اگر لینک یوتیوب است، ابتدا از Cobalt API استفاده کن (دور زدن کامل بن IP)
         if "youtube.com" in url or "youtu.be" in url:
-            download_success = await download_via_piped(url, file_path)
+            download_success = await download_via_cobalt(url, file_path)
 
-        # ۲. اگر سرویس Piped پاسخ نداد، استفاده از yt-dlp برای سایر پلتفرم‌ها یا روش پشتیبان
+        # ۲. اگر Cobalt موفق نشد یا ویدیو برای شبکه دیگری بود، استفاده از yt-dlp با کلاینت iOS
         if not download_success:
             downloaded = await asyncio.to_thread(download_video_sync, url, output_prefix)
             if downloaded and os.path.exists(downloaded):
@@ -427,7 +412,7 @@ async def process_video_download(message: types.Message):
             await message.answer_video(video=FSInputFile(file_path), caption="✅ دانلود با موفقیت انجام شد!")
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ خطایی در دریافت ویدیو رخ داد. لطفا دوباره تلاش کنید.")
+            await status_msg.edit_text("❌ خطایی در دریافت ویدیو رخ داد. لطفاً لینک را بررسی کرده و مجدداً ارسال کنید.")
 
     except Exception as e:
         logging.error(f"Download error: {e}")
