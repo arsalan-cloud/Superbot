@@ -69,7 +69,6 @@ def currency_picker_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# کیبورد شیشه‌ای محاسبه‌گر در زیر نرخ ارز
 def rates_inline_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -81,54 +80,13 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- توابع پردازش و پارت‌بندی ویدیو ---
-def get_video_duration(file_path: str) -> float:
-    try:
-        cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        return float(result.stdout.strip())
-    except Exception:
-        return 0.0
-
-def split_video_if_needed(file_path: str, max_size_mb: int = 45) -> list[str]:
-    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-    if file_size_mb <= max_size_mb:
-        return [file_path]
-
-    duration = get_video_duration(file_path)
-    if duration <= 0:
-        return [file_path]
-
-    num_parts = int(file_size_mb // max_size_mb) + 1
-    part_duration = duration / num_parts
-    
-    parts = []
-    base_name, ext = os.path.splitext(file_path)
-    
-    for i in range(num_parts):
-        start_time = i * part_duration
-        part_path = f"{base_name}_part{i+1}{ext}"
-        cmd = [
-            "ffmpeg", "-y", "-ss", str(start_time), "-i", file_path,
-            "-t", str(part_duration), "-c", "copy", part_path
-        ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if os.path.exists(part_path) and os.path.getsize(part_path) > 0:
-            parts.append(part_path)
-
-    if parts:
-        os.remove(file_path)
-        return parts
-    return [file_path]
-
 def download_video_sync(url: str, output_path: str):
     ydl_opts = {
-        'format': 'best/bestvideo+bestaudio',
+        'format': 'best',  # اصلاح فرمت برای اجرا بدون نیاز به ffmpeg در هاست ابری
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
-        # راه‌حل دائمی: خواندن فایل کوکی برای عبور قطعی از ربات‌سنج یوتیوب
         'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
         'extractor_args': {
             'youtube': {
@@ -238,7 +196,6 @@ async def show_all_rates(message: types.Message):
         logging.error(f"Error fetching rates: {e}")
         await status_msg.edit_text("❌ خطا در دریافت نرخ‌های آنلاین.")
 
-# --- مدیریت کلیک روی دکمه‌های شیشه‌ای محاسبه در زیر نرخ ارز ---
 @dp.callback_query(F.data.startswith("calc_"))
 async def inline_calc_handler(callback: types.CallbackQuery, state: FSMContext):
     data = callback.data
@@ -252,7 +209,6 @@ async def inline_calc_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer(f"🔢 لطفاً مقدار **{CURRENCIES.get(from_c, from_c)}** را برای تبادله و تبدیل به **{CURRENCIES.get(to_c, to_c)}** وارد کنید:")
     await callback.answer()
 
-# --- بخش ماشین‌حساب و تبدیل ارز هوشمند ---
 @dp.message(F.text == "🧮 ماشین‌حساب تبدیل ارز")
 async def converter_section(message: types.Message):
     await message.answer("🧮 **ماشین‌حساب هوشمند و تبادله ارز**\n\nیکی از گزینه‌های سریع زیر را انتخاب کنید یا دکمه **تبدیل ارز دلخواه** را بزنید:", reply_markup=currency_menu())
@@ -302,7 +258,6 @@ async def process_to_curr(message: types.Message, state: FSMContext):
         logging.error(f"Error fetching unit rate: {e}")
         await status_msg.edit_text("❌ خطا در دریافت نرخ.")
 
-# جفت‌ارزهای میانبر سریع
 FAST_PAIRS = {
     "💵 دلار به افغانی 🇦🇫": ("USD", "AFN"),
     "🇦🇫 افغانی به دلار 💵": ("AFN", "USD"),
@@ -368,7 +323,6 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
-# --- بخش دانلودر شبکه‌های اجتماعی ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
@@ -382,23 +336,15 @@ async def process_video_download(message: types.Message):
         file_path = await asyncio.to_thread(download_video_sync, url, output_template)
         
         if os.path.exists(file_path):
-            await status_msg.edit_text("⚙️ در حال بررسی حجم فایل و آماده‌سازی...")
-            file_parts = await asyncio.to_thread(split_video_if_needed, file_path)
-            
-            total_parts = len(file_parts)
-            for idx, part in enumerate(file_parts, 1):
-                caption = f"✅ دانلود با موفقیت انجام شد!" if total_parts == 1 else f"📦 پارت {idx} از {total_parts}"
-                await status_msg.edit_text(f"📤 در حال ارسال پارت {idx} از {total_parts} به تلگرام...")
-                await message.answer_video(video=FSInputFile(part), caption=caption)
-                os.remove(part)
-            
+            await message.answer_video(video=FSInputFile(file_path), caption="✅ دانلود با موفقیت انجام شد!")
+            os.remove(file_path)
             await status_msg.delete()
         else:
             await status_msg.edit_text("❌ خطایی در دانلود فایل رخ داد. لینک نامعتبر است.")
 
     except Exception as e:
         logging.error(f"Download error: {e}")
-        await status_msg.edit_text("❌ دانلود ناموفق بود. ممکن است ویدیو خصوصی باشد یا یوتیوب دسترسی سرور را محدود کرده باشد.")
+        await status_msg.edit_text("❌ دانلود ناموفق بود. ممکن است ویدیو خصوصی باشد یا لایو/موزیک‌پارتکشن باشد.")
 
 # --- سرور بررسی سلامت (Health Check برای Render) ---
 async def handle_health(request):
