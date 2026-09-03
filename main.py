@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import re
-import subprocess
+import glob
 
 # فعال‌سازی خودکار ffmpeg در محیط ابری Render
 import imageio_ffmpeg
@@ -14,7 +14,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiohttp import web
+from aiohttp import web, ClientTimeout
 import aiohttp
 import yt_dlp
 
@@ -86,11 +86,11 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- تابع اصلاح‌شده دانلود ویدیو با پشتیبانی کامل Ffmpeg و پایداری بالا ---
-def download_video_sync(url: str, output_path: str):
+# --- تابع دانلود ویدیو (بهینه‌شده برای دور زدن محدودیت‌های Render و یوتیوب) ---
+def download_video_sync(url: str, output_prefix: str):
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': output_path,
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best/b',
+        'outtmpl': f"{output_prefix}.%(ext)s",
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
@@ -99,27 +99,39 @@ def download_video_sync(url: str, output_path: str):
         'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web', 'mweb']
+                'player_client': ['ios', 'mweb', 'android', 'web']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
         }
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info)
+        ydl.download([url])
+    
+    files = glob.glob(f"{output_prefix}.*")
+    return files[0] if files else None
 
 # --- دریافت نرخ‌های زنده از اینترنت ---
 async def get_live_rates():
-    async with aiohttp.ClientSession() as session:
-        async with session.get("https://open.er-api.com/v6/latest/USD", timeout=10) as resp:
-            fiat_data = await resp.json()
-        async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10) as resp_crypto:
-            crypto_data = await resp_crypto.json()
-            
-    rates = fiat_data.get("rates", {})
-    rates["BTC"] = float(crypto_data.get("price", 0))
+    rates = {}
+    timeout = ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.get("https://open.er-api.com/v6/latest/USD") as resp:
+                fiat_data = await resp.json()
+                rates = fiat_data.get("rates", {})
+        except Exception as e:
+            logging.error(f"Fiat API error: {e}")
+
+        try:
+            async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT") as resp_crypto:
+                crypto_data = await resp_crypto.json()
+                rates["BTC"] = float(crypto_data.get("price", 0))
+        except Exception as e:
+            logging.error(f"Crypto API error: {e}")
+            rates["BTC"] = 0.0
+
     return rates
 
 # --- هندلرهای منو و دستورات اصلی ---
@@ -174,6 +186,10 @@ async def show_all_rates(message: types.Message):
     status_msg = await message.answer("🔄 در حال دریافت آخرین نرخ‌های زنده بازار...")
     try:
         rates = await get_live_rates()
+        if not rates:
+            await status_msg.edit_text("❌ خطا در دریافت نرخ‌های آنلاین.")
+            return
+
         usd_afn = rates.get("AFN", 1)
         usd_eur = rates.get("EUR", 1)
         usd_try = rates.get("TRY", 1)
@@ -182,11 +198,11 @@ async def show_all_rates(message: types.Message):
         usd_aed = rates.get("AED", 1)
         btc = rates.get("BTC", 0)
 
-        eur_afn = usd_afn / usd_eur
-        try_afn = usd_afn / usd_try
-        pkr_afn = usd_afn / usd_pkr
-        aed_afn = usd_afn / usd_aed
-        toman_afn = (usd_afn / usd_irr) * 10
+        eur_afn = usd_afn / usd_eur if usd_eur else 0
+        try_afn = usd_afn / usd_try if usd_try else 0
+        pkr_afn = usd_afn / usd_pkr if usd_pkr else 0
+        aed_afn = usd_afn / usd_aed if usd_aed else 0
+        toman_afn = (usd_afn / usd_irr) * 10 if usd_irr else 0
 
         text = (
             "📈 **قیمت‌های لحظه‌ای بازار ارز**\n\n"
@@ -196,7 +212,7 @@ async def show_all_rates(message: types.Message):
             f"🇦🇪 **۱ درهم امارات:** {aed_afn:.2f} افغانی 🇦🇫\n"
             f"🇵🇰 **۱,۰۰۰ کلدار پاکستان:** {(pkr_afn * 1000):.2f} افغانی 🇦🇫\n"
             f"🇮🇷 **۱,۰۰۰,۰۰۰ تومان ایران:** {(toman_afn * 1000000):,.0f} افغانی 🇦🇫\n"
-            f"💶 **۱ یورو به دلار:** {(1/usd_eur):.2f} USD 💵\n"
+            f"💶 **۱ یورو به دلار:** {(1/usd_eur if usd_eur else 0):.2f} USD 💵\n"
             f"🪙 **بیت‌کوین:** ${btc:,.2f}\n\n"
             "⚡ *برای محاسبه و تبادله سریع ارزها، از دکمه‌های زیر استفاده کنید:*"
         )
@@ -307,8 +323,8 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
 
     amount = float(message.text)
     data = await state.get_data()
-    from_code = data['from_code']
-    to_code = data['to_code']
+    from_code = data.get('from_code', 'USD')
+    to_code = data.get('to_code', 'AFN')
 
     status_msg = await message.answer("⏳ در حال محاسبه دقیق تبادله...")
     try:
@@ -332,7 +348,7 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
-# --- مدیریت دانلود ویدیو با کنترل حجم فایل و ارورها ---
+# --- مدیریت دانلود ویدیو ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
@@ -340,21 +356,19 @@ async def process_video_download(message: types.Message):
     
     file_id = message.from_user.id
     os.makedirs("downloads", exist_ok=True)
-    output_template = f"downloads/{file_id}_%(id)s.%(ext)s"
+    output_prefix = f"downloads/{file_id}_{message.message_id}"
+    file_path = None
     
     try:
-        file_path = await asyncio.to_thread(download_video_sync, url, output_template)
+        file_path = await asyncio.to_thread(download_video_sync, url, output_prefix)
         
         if file_path and os.path.exists(file_path):
-            # بررسی محدودیت حجم ۵۰ مگابایت تلگرام
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             if file_size_mb > 50:
-                await status_msg.edit_text("❌ حجم ویدیو بیشتر از ۵۰ مگابایت است و تلگرام اجازه ارسال فایل‌های بزرگ‌تر از ۵۰ مگابایت را نمی‌دهد.")
-                os.remove(file_path)
+                await status_msg.edit_text("❌ حجم ویدیو بیشتر از ۵۰ مگابایت است (محدودیت تلگرام).")
                 return
 
             await message.answer_video(video=FSInputFile(file_path), caption="✅ دانلود با موفقیت انجام شد!")
-            os.remove(file_path)
             await status_msg.delete()
         else:
             await status_msg.edit_text("❌ خطایی در دانلود فایل رخ داد. لینک نامعتبر است یا ویدیو در دسترس نیست.")
@@ -362,6 +376,12 @@ async def process_video_download(message: types.Message):
     except Exception as e:
         logging.error(f"Download error: {e}")
         await status_msg.edit_text(f"❌ دانلود ناموفق بود.\nجزییات خطا: {str(e)[:100]}")
+    finally:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as clean_err:
+                logging.error(f"Error deleting temporary file: {clean_err}")
 
 # --- سرور بررسی سلامت (Health Check برای Render) ---
 async def handle_health(request):
