@@ -29,9 +29,6 @@ dp = Dispatcher()
 
 URL_PATTERN = re.compile(r'https?://(www\.)?(instagram\.com|tiktok\.com|youtube\.com|youtu\.be)/.+')
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-COOKIE_PATH = os.path.join(BASE_DIR, "cookies.txt")
-
 # --- تعریف حالات FSM برای محاسبه ارز ---
 class CurrencyState(StatesGroup):
     waiting_for_from_curr = State()
@@ -88,46 +85,66 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- دانلود از طریق API پشتیبان (Cobalt) در صورت بلاک بودن IP ---
-async def download_via_cobalt(url: str, output_path: str) -> bool:
-    api_url = "https://api.cobalt.tools/api/json"
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    payload = {"url": url, "videoQuality": "720"}
+# --- استخراج آیدی ویدیو یوتیوب ---
+def extract_youtube_id(url: str):
+    match = re.search(r'(?:v=|\/|youtu\.be\/)([a-zA-Z0-9_-]{11})', url)
+    return match.group(1) if match else None
+
+# --- دانلود مستقیم بدون نیاز به کوکی از طریق سرویس‌های واسط Piped ---
+async def download_via_piped(url: str, output_path: str) -> bool:
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        return False
+        
+    instances = [
+        f"https://api.piped.yt/streams/{video_id}",
+        f"https://pipedapi.kavin.rocks/streams/{video_id}",
+        f"https://piped-api.garudalinux.org/streams/{video_id}"
+    ]
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(api_url, json=payload, headers=headers, timeout=20) as resp:
-                if resp.status != 200:
-                    return False
-                data = await resp.json()
-                video_link = data.get("url")
-                if not video_link:
-                    return False
-                
-                async with session.get(video_link) as file_resp:
-                    if file_resp.status == 200:
-                        with open(output_path, "wb") as f:
-                            f.write(await file_resp.read())
-                        return True
-    except Exception as e:
-        logging.error(f"Cobalt API fallback error: {e}")
+    timeout = ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for api_endpoint in instances:
+            try:
+                async with session.get(api_endpoint) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        streams = data.get("videoStreams", [])
+                        
+                        stream_url = None
+                        # پیدا کردن بهترین لینک مستقیم با فرمت MP4
+                        for s in streams:
+                            if not s.get("videoOnly") and "mp4" in s.get("mimeType", "").lower():
+                                stream_url = s.get("url")
+                                break
+                        
+                        if not stream_url and streams:
+                            for s in streams:
+                                if "mp4" in s.get("mimeType", "").lower():
+                                    stream_url = s.get("url")
+                                    break
+                                    
+                        if stream_url:
+                            async with session.get(stream_url) as file_resp:
+                                if file_resp.status == 200:
+                                    with open(output_path, "wb") as f:
+                                        f.write(await file_resp.read())
+                                    return True
+            except Exception as e:
+                logging.error(f"Piped instance failed: {e}")
+                continue
     return False
 
-# --- تابع دانلود با yt-dlp ---
+# --- دانلود با yt-dlp ---
 def download_video_sync(url: str, output_prefix: str):
-    has_cookie = os.path.exists(COOKIE_PATH)
     ydl_opts = {
-        'format': 'bestvideo+bestaudio/best/b',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best/b',
         'outtmpl': f"{output_prefix}.%(ext)s",
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
         'ffmpeg_location': os.path.dirname(ffmpeg_exe_path),
         'merge_output_format': 'mp4',
-        'cookiefile': COOKIE_PATH if has_cookie else None,
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'mweb']
@@ -377,7 +394,7 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
-# --- مدیریت هوشمند دانلود ویدیو (با سیستم پشتیبان Cobalt) ---
+# --- مدیریت دانلود ویدیو ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
@@ -390,18 +407,16 @@ async def process_video_download(message: types.Message):
     download_success = False
 
     try:
-        # ۱. ابتدا تلاش برای دانلود با yt-dlp
-        try:
+        # ۱. ابتدا دانلود مستقیم با Piped برای دور زدن کامل بن IP یوتیوب
+        if "youtube.com" in url or "youtu.be" in url:
+            download_success = await download_via_piped(url, file_path)
+
+        # ۲. اگر سرویس Piped پاسخ نداد، استفاده از yt-dlp برای سایر پلتفرم‌ها یا روش پشتیبان
+        if not download_success:
             downloaded = await asyncio.to_thread(download_video_sync, url, output_prefix)
             if downloaded and os.path.exists(downloaded):
                 file_path = downloaded
                 download_success = True
-        except Exception as yt_err:
-            logging.warning(f"yt-dlp failed ({yt_err}), switching to Cobalt API...")
-
-        # ۲. در صورت بروز هرگونه خطای ضدربات یوتیوب، سوئیچ به API پشتیبان
-        if not download_success:
-            download_success = await download_via_cobalt(url, file_path)
 
         if download_success and os.path.exists(file_path):
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
