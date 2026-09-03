@@ -44,7 +44,7 @@ CURRENCIES = {
 def main_menu():
     kb = [
         [KeyboardButton(text="📥 دانلودر شبکه‌های اجتماعی"), KeyboardButton(text="🧠 هوش مصنوعی")],
-        [KeyboardButton(text="📊 نرخ آنلاین تمام ارزها"), KeyboardButton(text="🧮 ماشین‌حساب تبدیل ارز")],
+        [KeyboardButton(text="📈 نرخ ارز"), KeyboardButton(text="🧮 ماشین‌حساب تبدیل ارز")],
         [KeyboardButton(text="👤 حساب کاربری")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
@@ -111,14 +111,18 @@ def split_video_if_needed(file_path: str, max_size_mb: int = 45) -> list[str]:
 
 def download_video_sync(url: str, output_path: str):
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'best/bestvideo+bestaudio',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
+        'geo_bypass': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'mweb', 'android']
+                'player_client': ['mweb', 'android', 'web']
             }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         }
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -171,8 +175,8 @@ async def profile_btn(message: types.Message):
         parse_mode="Markdown"
     )
 
-# --- بخش نرخ آنلاین تمام ارزها (مستقل) ---
-@dp.message(F.text == "📊 نرخ آنلاین تمام ارزها")
+# --- بخش نرخ آنلاین ارزها (سازگار با متن دکمه‌ها) ---
+@dp.message(F.text.contains("نرخ ارز"))
 async def show_all_rates(message: types.Message):
     status_msg = await message.answer("🔄 در حال دریافت آخرین نرخ‌های زنده بازار...")
     try:
