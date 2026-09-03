@@ -85,46 +85,38 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- موتور دانلود قدرتمند Cobalt API ---
+# --- استخراج مستقیم ویدیو از Cobalt API اصلی ---
 async def download_via_cobalt(url: str, output_path: str) -> bool:
-    cobalt_instances = [
-        "https://api.cobalt.tools/",
-        "https://cobalt-api.kwi.im/",
-        "https://api.cobalt.pyro.host/"
-    ]
-    
+    endpoint = "https://api.cobalt.tools/"
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-    
     payload = {
         "url": url,
         "videoQuality": "720"
     }
 
-    timeout = ClientTimeout(total=30)
+    timeout = ClientTimeout(total=25)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        for instance in cobalt_instances:
-            try:
-                async with session.post(instance, json=payload, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        dl_url = data.get("url")
-                        
-                        if dl_url:
-                            async with session.get(dl_url, headers=headers) as v_resp:
-                                if v_resp.status == 200:
-                                    with open(output_path, "wb") as f:
-                                        f.write(await v_resp.read())
-                                    return True
-            except Exception as e:
-                logging.error(f"Cobalt Instance {instance} Error: {e}")
-                continue
+        try:
+            async with session.post(endpoint, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    dl_url = data.get("url")
+                    
+                    if dl_url:
+                        async with session.get(dl_url) as v_resp:
+                            if v_resp.status == 200:
+                                with open(output_path, "wb") as f:
+                                    f.write(await v_resp.read())
+                                return True
+        except Exception as e:
+            logging.error(f"Cobalt API main failed: {e}")
     return False
 
-# --- استخراج ویدیو تیک‌تاک با TikWM API ---
+# --- استخراج اختصاصی تیک‌تاک ---
 async def download_tiktok_api(url: str, output_path: str) -> bool:
     timeout = ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -144,7 +136,7 @@ async def download_tiktok_api(url: str, output_path: str) -> bool:
             logging.error(f"TikTok API error: {e}")
     return False
 
-# --- دانلود زاپاس با yt-dlp (فقط مخصوص اینستاگرام) ---
+# --- دانلود پشتیبان قدرتمند yt-dlp با دور زدن چالش‌های سرور ابری ---
 def download_fallback_sync(url: str, output_prefix: str):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -153,7 +145,12 @@ def download_fallback_sync(url: str, output_prefix: str):
         'no_warnings': True,
         'geo_bypass': True,
         'ffmpeg_location': os.path.dirname(ffmpeg_exe_path),
-        'merge_output_format': 'mp4'
+        'merge_output_format': 'mp4',
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android', 'mweb']
+            }
+        }
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -410,17 +407,15 @@ async def process_video_download(message: types.Message):
     download_success = False
 
     try:
-        is_youtube = "youtube.com" in url or "youtu.be" in url
-
-        # ۱. استخراج با Cobalt Engine (سریع و بدون نیاز به کوکی)
+        # ۱. تلاش برای دانلود از طریق Cobalt اصلی
         download_success = await download_via_cobalt(url, file_path)
 
-        # ۲. پشتیبان اختصاصی تیک‌تاک
+        # ۲. در صورت نیاز به تیک‌تاک
         if not download_success and "tiktok.com" in url:
             download_success = await download_tiktok_api(url, file_path)
 
-        # ۳. پشتیبان yt-dlp (فقط برای غیر یوتیوب)
-        if not download_success and not is_youtube:
+        # ۳. استفاده از yt-dlp هوشمند با کلاینت سفارشی
+        if not download_success:
             downloaded = await asyncio.to_thread(download_fallback_sync, url, f"downloads/{file_id}_{message.message_id}")
             if downloaded and os.path.exists(downloaded):
                 file_path = downloaded
