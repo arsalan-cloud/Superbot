@@ -85,11 +85,12 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- موتور دانلود اختصاصی Cobalt API (مخصوص دور زدن بن آی‌پی یوتیوب) ---
-async def download_via_cobalt(url: str, output_path: str) -> bool:
-    endpoints = [
+# --- دانلود هوشمند بدون کوکی از طریق API واسط (Cobalt API Engine) ---
+async def download_via_api(url: str, output_path: str) -> bool:
+    api_endpoints = [
         "https://api.cobalt.tools/",
-        "https://cobalt-api.kwi.fi/"
+        "https://cobalt-api.kwi.fi/",
+        "https://co.wuk.sh/"
     ]
     headers = {
         "Accept": "application/json",
@@ -101,9 +102,9 @@ async def download_via_cobalt(url: str, output_path: str) -> bool:
         "videoQuality": "720"
     }
 
-    timeout = ClientTimeout(total=25)
+    timeout = ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        for ep in endpoints:
+        for ep in api_endpoints:
             try:
                 async with session.post(ep, json=payload, headers=headers) as resp:
                     if resp.status in [200, 201]:
@@ -116,12 +117,12 @@ async def download_via_cobalt(url: str, output_path: str) -> bool:
                                         f.write(await dl_resp.read())
                                     return True
             except Exception as e:
-                logging.error(f"Cobalt endpoint {ep} error: {e}")
+                logging.error(f"API Endpoint {ep} failed: {e}")
                 continue
     return False
 
-# --- موتور دانلود yt-dlp با کلاینت iOS (مخصوص اینستاگرام، تیک‌تاک و رزرو یوتیوب) ---
-def download_video_sync(url: str, output_prefix: str):
+# --- دانلود زاپاس با yt-dlp (در صورت نیاز) ---
+def download_fallback_sync(url: str, output_prefix: str):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': f"{output_prefix}.%(ext)s",
@@ -129,12 +130,7 @@ def download_video_sync(url: str, output_prefix: str):
         'no_warnings': True,
         'geo_bypass': True,
         'ffmpeg_location': os.path.dirname(ffmpeg_exe_path),
-        'merge_output_format': 'mp4',
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android']
-            }
-        }
+        'merge_output_format': 'mp4'
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -379,26 +375,24 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
-# --- مدیریت دانلود ویدیو (با هوش خودکار برای دور زدن فیلترهای ضدربات) ---
+# --- مدیریت دانلود ویدیو با ترکیب API و پشتیبان ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
-    status_msg = await message.answer("⏳ در حال دریافت و دانلود ویدیو...")
+    status_msg = await message.answer("⏳ در حال استخراج و دانلود ویدیو بدون کوکی...")
     
     file_id = message.from_user.id
     os.makedirs("downloads", exist_ok=True)
-    output_prefix = f"downloads/{file_id}_{message.message_id}"
-    file_path = f"{output_prefix}.mp4"
+    file_path = f"downloads/{file_id}_{message.message_id}.mp4"
     download_success = False
 
     try:
-        # ۱. اگر لینک یوتیوب است، ابتدا از Cobalt API استفاده کن (دور زدن کامل بن IP)
-        if "youtube.com" in url or "youtu.be" in url:
-            download_success = await download_via_cobalt(url, file_path)
+        # ۱. تلاش اول: استخراج از API واسط بدون نیاز به کوکی
+        download_success = await download_via_api(url, file_path)
 
-        # ۲. اگر Cobalt موفق نشد یا ویدیو برای شبکه دیگری بود، استفاده از yt-dlp با کلاینت iOS
+        # ۲. تلاش دوم (پشتیبان): استفاده از yt-dlp محلی
         if not download_success:
-            downloaded = await asyncio.to_thread(download_video_sync, url, output_prefix)
+            downloaded = await asyncio.to_thread(download_fallback_sync, url, f"downloads/{file_id}_{message.message_id}")
             if downloaded and os.path.exists(downloaded):
                 file_path = downloaded
                 download_success = True
@@ -412,7 +406,7 @@ async def process_video_download(message: types.Message):
             await message.answer_video(video=FSInputFile(file_path), caption="✅ دانلود با موفقیت انجام شد!")
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ خطایی در دریافت ویدیو رخ داد. لطفاً لینک را بررسی کرده و مجدداً ارسال کنید.")
+            await status_msg.edit_text("❌ خطایی در استخراج ویدیو رخ داد. لطفاً لینک را بررسی کرده و مجدداً ارسال کنید.")
 
     except Exception as e:
         logging.error(f"Download error: {e}")
