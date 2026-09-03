@@ -29,6 +29,10 @@ dp = Dispatcher()
 
 URL_PATTERN = re.compile(r'https?://(www\.)?(instagram\.com|tiktok\.com|youtube\.com|youtu\.be)/.+')
 
+# مسیر دقیق فایل کوکی در پوشه پروژه
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIE_PATH = os.path.join(BASE_DIR, "cookies.txt")
+
 # --- تعریف حالات FSM برای محاسبه ارز ---
 class CurrencyState(StatesGroup):
     waiting_for_from_curr = State()
@@ -86,8 +90,14 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- تابع دانلود ویدیو (بهینه‌شده برای دور زدن محدودیت‌های Render و یوتیوب) ---
+# --- تابع دانلود ویدیو با پشتیبانی از فایل کوکی و دور زدن بن IP ---
 def download_video_sync(url: str, output_prefix: str):
+    has_cookie = os.path.exists(COOKIE_PATH)
+    if has_cookie:
+        logging.info("--> File cookies.txt found! Using cookies for YouTube authentication.")
+    else:
+        logging.warning("--> cookies.txt NOT found. Proceeding without cookies.")
+
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best/b',
         'outtmpl': f"{output_prefix}.%(ext)s",
@@ -96,7 +106,7 @@ def download_video_sync(url: str, output_prefix: str):
         'geo_bypass': True,
         'ffmpeg_location': os.path.dirname(ffmpeg_exe_path),
         'merge_output_format': 'mp4',
-        'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+        'cookiefile': COOKIE_PATH if has_cookie else None,
         'extractor_args': {
             'youtube': {
                 'player_client': ['ios', 'mweb', 'android', 'web']
@@ -180,7 +190,7 @@ async def profile_btn(message: types.Message):
         parse_mode="Markdown"
     )
 
-# --- بخش نرخ آنلاین ارزها همراه با دکمه محاسبه در پایین ---
+# --- بخش نرخ آنلاین ارزها ---
 @dp.message(F.text.contains("نرخ ارز"))
 async def show_all_rates(message: types.Message):
     status_msg = await message.answer("🔄 در حال دریافت آخرین نرخ‌های زنده بازار...")
