@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# توکن ربات شما (از محیط ریندر یا متغیر تنظیم شده می‌خواند)
+# توکن ربات از متغیرهای محیطی Render خوانده می‌شود
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
 bot = Bot(token=TOKEN)
@@ -30,7 +30,7 @@ class DownloaderStates(StatesGroup):
 # --- کیبورد اصلی ---
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 دانلودر حرفه‌ای (یوتیوب/اینستاگرام/تیک‌تاک)", callback_data="menu_downloader")],
+        [InlineKeyboardButton(text="📥 دانلودر حرفه‌ای (یوتیوب/تیک‌تاک/اینستاگرام)", callback_data="menu_downloader")],
         [InlineKeyboardButton(text="💱 تبدیل ارزها", callback_data="menu_currency"),
          InlineKeyboardButton(text="🧮 ماشین حساب پیشرفته", callback_data="menu_calc")],
         [InlineKeyboardButton(text="ℹ️ راهنما و درباره ما", callback_data="menu_help")]
@@ -61,14 +61,14 @@ async def back_home_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ==========================================
-# بخش دانلودر به‌روزرسانی‌شده (سازگار با ریندر)
+# بخش دانلودر پیشرفته
 # ==========================================
 @router.callback_query(F.data == "menu_downloader")
 async def downloader_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(DownloaderStates.waiting_for_url)
     await callback.message.edit_text(
         "📥 **بخش دانلود مدیا**\n\n"
-        "لینک ویدیو یا پست مورد نظر خود (از یوتیوب، اینستاگرام، تیک‌تاک، توییتر و...) را ارسال کنید:",
+        "لینک ویدیو یا پست مورد نظر خود (از یوتیوب، تیک‌تاک و...) را ارسال کنید:",
         reply_markup=back_to_menu(),
         parse_mode="Markdown"
     )
@@ -86,6 +86,18 @@ async def process_download_url(message: Message, state: FSMContext):
     media_result = await download_media_engine(url)
 
     await bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)
+
+    # مدیریت خطای محدودیت اینستاگرام روی سرور ابری
+    if isinstance(media_result, dict) and media_result.get("error") == "instagram_restricted":
+        await message.answer(
+            "❌ **محدودیت اینستاگرام:**\n\n"
+            "اینستاگرام دسترسی به این پست را به صورت ناشناس و از روی سرورهای ابری مسدود کرده است. "
+            "لطفاً لینک ویدیوهای **یوتیوب** یا **تیک‌تاک** را ارسال کنید.",
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown"
+        )
+        await state.clear()
+        return
 
     if not media_result:
         await message.answer("❌ متأسفانه دانلود از این لینک امکان‌پذیر نبود یا لینک نامعتبر است.", reply_markup=back_to_menu())
@@ -111,7 +123,7 @@ async def process_download_url(message: Message, state: FSMContext):
             except:
                 pass
         elif media_result["type"] == "picker":
-            for u in media_result["urls"][:5]:  # ارسال حداکثر ۵ آیتم برای اسلایدها
+            for u in media_result["urls"][:5]:
                 await message.answer_photo(photo=u)
             await message.answer("✅ تصاویر اسلاید با موفقیت ارسال شدند.", reply_markup=main_menu())
     except Exception as e:
@@ -120,8 +132,10 @@ async def process_download_url(message: Message, state: FSMContext):
     await state.clear()
 
 async def download_media_engine(url: str):
-    """ موتور دانلود قدرتمند ترکیبی (Cobalt API v2 + yt-dlp fallback) """
-    # 1. تلاش از طریق Cobalt API (بهینه‌ترین روش برای اجرا روی Render)
+    """ موتور دانلود ترکیبی با مدیریت خطای اینستاگرام """
+    is_instagram = "instagram.com" in url
+
+    # 1. تلاش از طریق Cobalt API
     cobalt_url = "https://api.cobalt.tools/"
     payload = {
         "url": url,
@@ -149,7 +163,11 @@ async def download_media_engine(url: str):
     except Exception as e:
         print(f"Cobalt API error: {e}")
 
-    # 2. پشتیبان دوم: استفاده از کتابخانه قدرتمند yt-dlp روی سرور
+    # اگر لینک اینستاگرام بود و از طریق API نشد، از ادامه درخواست مستقیم جلوگیری می‌کنیم تا ارور لاگ ندهد
+    if is_instagram:
+        return {"error": "instagram_restricted"}
+
+    # 2. پشتیبان دوم: yt-dlp برای سایر سایت‌ها مثل یوتیوب
     def ytdlp_download():
         ydl_opts = {
             'format': 'best[ext=mp4]/best',
@@ -196,13 +214,11 @@ async def process_currency(message: Message, state: FSMContext):
         return
     
     toman = int(text)
-    # نرخ تقریبی دلار (قابل تنظیم)
     approx_rate = 60000 
     usd = toman / approx_rate
 
     await message.answer(
-        f"💵 مقدار {toman:,} تومان معادل تقریبی **{usd:.2f} دلار** است.\n"
-        f"(محاسبه شده با نرخ فرضی پایه)",
+        f"💵 مقدار {toman:,} تومان معادل تقریبی **{usd:.2f} دلار** است.",
         reply_markup=main_menu(),
         parse_mode="Markdown"
     )
@@ -216,7 +232,7 @@ async def calc_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CalculatorStates.waiting_for_expression)
     await callback.message.edit_text(
         "🧮 **ماشین حساب**\n\n"
-        "عبارت ریاضی خود را بفرستید (مثال: `125 * 4 + 50` یا `(15 + 20) * 3`):",
+        "عبارت ریاضی خود را بفرستید (مثال: `125 * 4 + 50`):",
         reply_markup=back_to_menu(),
         parse_mode="Markdown"
     )
@@ -225,17 +241,16 @@ async def calc_menu(callback: CallbackQuery, state: FSMContext):
 @router.message(CalculatorStates.waiting_for_expression)
 async def process_calc(message: Message, state: FSMContext):
     expr = message.text.strip()
-    # پاک‌سازی ایمن برای جلوگیری از تزریق کد ناخواسته
     allowed_chars = set("0123456789+-*/(). ")
     if not all(c in allowed_chars for c in expr):
-        await message.answer("❌ عبارت وارد شده نامعتبر است. فقط از اعداد و عملگرهای ریاضی استفاده کنید.", reply_markup=back_to_menu())
+        await message.answer("❌ عبارت وارد شده نامعتبر است.", reply_markup=back_to_menu())
         return
 
     try:
         result = eval(expr)
         await message.answer(f"🧮 نتیجه محاسبه:\n`{expr} = {result}`", reply_markup=main_menu(), parse_mode="Markdown")
     except Exception:
-        await message.answer("❌ خطا در محاسبه! لطفاً عبارت را به درستی وارد کنید.", reply_markup=back_to_menu())
+        await message.answer("❌ خطا در محاسبه!", reply_markup=back_to_menu())
     
     await state.clear()
 
@@ -246,15 +261,14 @@ async def process_calc(message: Message, state: FSMContext):
 async def help_menu(callback: CallbackQuery):
     await callback.message.edit_text(
         "ℹ️ **راهنمای ربات**\n\n"
-        "• این ربات مجهز به موتور دانلود پیشرفته است.\n"
-        "• توکن‌های امنیتی شما روی Render تنظیم شده‌اند.\n"
-        "• برای شروع مجدد کافی است دستور /start را ارسال کنید.",
+        "• این ربات روی سرور ابری Render فعال است.\n"
+        "• برای شروع مجدد دستور /start را ارسال کنید.",
         reply_markup=back_to_menu(),
         parse_mode="Markdown"
     )
     await callback.answer()
 
-# --- نقطه شروع اجرای ربات ---
+# --- اجرای اصلی ربات ---
 async def main():
     print("Bot is starting...")
     await dp.start_polling(bot)
