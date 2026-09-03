@@ -6,7 +6,8 @@ import subprocess
 
 # فعال‌سازی خودکار ffmpeg در محیط ابری Render
 import imageio_ffmpeg
-os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+ffmpeg_exe_path = imageio_ffmpeg.get_ffmpeg_exe()
+os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg_exe_path)
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
@@ -85,14 +86,16 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- تابع دانلود ویدیو با پشتیبانی از بالاترین کیفیت و کوکی ---
+# --- تابع اصلاح‌شده دانلود ویدیو با پشتیبانی کامل Ffmpeg و پایداری بالا ---
 def download_video_sync(url: str, output_path: str):
     ydl_opts = {
-        'format': 'best/bestvideo+bestaudio',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
+        'ffmpeg_location': os.path.dirname(ffmpeg_exe_path),
+        'merge_output_format': 'mp4',
         'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
         'extractor_args': {
             'youtube': {
@@ -329,6 +332,7 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
+# --- مدیریت دانلود ویدیو با کنترل حجم فایل و ارورها ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
@@ -341,16 +345,23 @@ async def process_video_download(message: types.Message):
     try:
         file_path = await asyncio.to_thread(download_video_sync, url, output_template)
         
-        if os.path.exists(file_path):
+        if file_path and os.path.exists(file_path):
+            # بررسی محدودیت حجم ۵۰ مگابایت تلگرام
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            if file_size_mb > 50:
+                await status_msg.edit_text("❌ حجم ویدیو بیشتر از ۵۰ مگابایت است و تلگرام اجازه ارسال فایل‌های بزرگ‌تر از ۵۰ مگابایت را نمی‌دهد.")
+                os.remove(file_path)
+                return
+
             await message.answer_video(video=FSInputFile(file_path), caption="✅ دانلود با موفقیت انجام شد!")
             os.remove(file_path)
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ خطایی در دانلود فایل رخ داد. لینک نامعتبر است.")
+            await status_msg.edit_text("❌ خطایی در دانلود فایل رخ داد. لینک نامعتبر است یا ویدیو در دسترس نیست.")
 
     except Exception as e:
         logging.error(f"Download error: {e}")
-        await status_msg.edit_text("❌ دانلود ناموفق بود. ممکن است ویدیو خصوصی باشد یا لینک معتبر نباشد.")
+        await status_msg.edit_text(f"❌ دانلود ناموفق بود.\nجزییات خطا: {str(e)[:100]}")
 
 # --- سرور بررسی سلامت (Health Check برای Render) ---
 async def handle_health(request):
