@@ -85,100 +85,66 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- موتور دانلود مستقیم از SaveFrom.net ---
-async def download_via_savefrom(url: str, output_path: str) -> bool:
-    sf_endpoint = "https://worker.sf-helper.com/project/cyclone.php"
+# --- موتور دانلود قدرتمند Cobalt API ---
+async def download_via_cobalt(url: str, output_path: str) -> bool:
+    cobalt_instances = [
+        "https://api.cobalt.tools/",
+        "https://cobalt-api.kwi.im/",
+        "https://api.cobalt.pyro.host/"
+    ]
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://en1.savefrom.net/",
-        "Origin": "https://en1.savefrom.net"
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
-    params = {
+    
+    payload = {
         "url": url,
-        "ts": "1710000000",
-        "client": "sf"
+        "videoQuality": "720"
     }
 
-    timeout = ClientTimeout(total=25)
+    timeout = ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for instance in cobalt_instances:
+            try:
+                async with session.post(instance, json=payload, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        dl_url = data.get("url")
+                        
+                        if dl_url:
+                            async with session.get(dl_url, headers=headers) as v_resp:
+                                if v_resp.status == 200:
+                                    with open(output_path, "wb") as f:
+                                        f.write(await v_resp.read())
+                                    return True
+            except Exception as e:
+                logging.error(f"Cobalt Instance {instance} Error: {e}")
+                continue
+    return False
+
+# --- استخراج ویدیو تیک‌تاک با TikWM API ---
+async def download_tiktok_api(url: str, output_path: str) -> bool:
+    timeout = ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
-            async with session.get(sf_endpoint, params=params, headers=headers) as resp:
+            async with session.post("https://www.tikwm.com/api/", data={"url": url}) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    url_list = data.get("url", [])
-                    dl_url = None
-
-                    if isinstance(url_list, list) and len(url_list) > 0:
-                        dl_url = url_list[0].get("url")
-                    elif isinstance(url_list, str):
-                        dl_url = url_list
-
+                    dl_url = data.get("data", {}).get("play")
                     if dl_url:
-                        async with session.get(dl_url, headers=headers) as v_resp:
+                        dl_full_url = f"https://www.tikwm.com{dl_url}" if dl_url.startswith("/") else dl_url
+                        async with session.get(dl_full_url) as v_resp:
                             if v_resp.status == 200:
                                 with open(output_path, "wb") as f:
                                     f.write(await v_resp.read())
                                 return True
         except Exception as e:
-            logging.error(f"SaveFrom API error: {e}")
+            logging.error(f"TikTok API error: {e}")
     return False
 
-# --- استخراج شناسه‌های ویدیو یوتیوب ---
-def extract_youtube_id(url: str) -> str:
-    pattern = r'(?:v=|\/([0-9A-Za-z_-]{11}).*|youtu\.be\/)([0-9A-Za-z_-]{11})'
-    match = re.search(pattern, url)
-    if match:
-        return match.group(1) or match.group(2)
-    return None
-
-# --- موتورهای پشتیبان (Piped & Invidious) در صورت شلوغی SaveFrom ---
-async def download_youtube_backup(url: str, output_path: str) -> bool:
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        return False
-
-    api_sources = [
-        {"type": "piped", "url": f"https://pipedapi.kavin.rocks/streams/{video_id}"},
-        {"type": "piped", "url": f"https://api.piped.yt/streams/{video_id}"},
-        {"type": "invidious", "url": f"https://inv.phn.mr/api/v1/videos/{video_id}"},
-        {"type": "invidious", "url": f"https://invidious.nerdvpn.de/api/v1/videos/{video_id}"}
-    ]
-
-    timeout = ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        for source in api_sources:
-            try:
-                async with session.get(source["url"]) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        dl_url = None
-
-                        if source["type"] == "piped":
-                            streams = data.get("videoStreams", [])
-                            for s in streams:
-                                if s.get("videoOnly") is False and s.get("quality") in ["720p", "480p", "360p"]:
-                                    dl_url = s.get("url")
-                                    break
-                            if not dl_url and streams:
-                                dl_url = streams[0].get("url")
-
-                        elif source["type"] == "invidious":
-                            format_streams = data.get("formatStreams", [])
-                            if format_streams:
-                                dl_url = format_streams[0].get("url")
-
-                        if dl_url:
-                            async with session.get(dl_url) as video_resp:
-                                if video_resp.status == 200:
-                                    with open(output_path, "wb") as f:
-                                        f.write(await video_resp.read())
-                                    return True
-            except Exception as e:
-                logging.error(f"Backup API Source {source['url']} failed: {e}")
-                continue
-    return False
-
-# --- دانلود زاپاس برای اینستاگرام ---
+# --- دانلود زاپاس با yt-dlp (فقط مخصوص اینستاگرام) ---
 def download_fallback_sync(url: str, output_prefix: str):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -432,11 +398,11 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         logging.error(f"Conversion error: {e}")
         await status_msg.edit_text("❌ خطا در فرآیند محاسبه.")
 
-# --- مدیریت دانلود هوشمند ویدیو با اولویت SaveFrom ---
+# --- مدیریت دانلود هوشمند ویدیو ---
 @dp.message(F.text.regexp(URL_PATTERN))
 async def process_video_download(message: types.Message):
     url = message.text.strip()
-    status_msg = await message.answer("⏳ در حال پردازش و استخراج ویدیو از SaveFrom...")
+    status_msg = await message.answer("⏳ در حال پردازش و استخراج ویدیو...")
     
     file_id = message.from_user.id
     os.makedirs("downloads", exist_ok=True)
@@ -446,14 +412,14 @@ async def process_video_download(message: types.Message):
     try:
         is_youtube = "youtube.com" in url or "youtu.be" in url
 
-        # ۱. اولویت اول: دانلود مستقیم با موتور SaveFrom.net
-        download_success = await download_via_savefrom(url, file_path)
+        # ۱. استخراج با Cobalt Engine (سریع و بدون نیاز به کوکی)
+        download_success = await download_via_cobalt(url, file_path)
 
-        # ۲. اولویت دوم: در صورت بروز خطای کلادفلر در SaveFrom، استفاده از APIهای یوتیوب
-        if not download_success and is_youtube:
-            download_success = await download_youtube_backup(url, file_path)
+        # ۲. پشتیبان اختصاصی تیک‌تاک
+        if not download_success and "tiktok.com" in url:
+            download_success = await download_tiktok_api(url, file_path)
 
-        # ۳. پشتیبان yt-dlp (فقط برای اینستاگرام و سایر پلتفرم‌ها، نه یوتیوب)
+        # ۳. پشتیبان yt-dlp (فقط برای غیر یوتیوب)
         if not download_success and not is_youtube:
             downloaded = await asyncio.to_thread(download_fallback_sync, url, f"downloads/{file_id}_{message.message_id}")
             if downloaded and os.path.exists(downloaded):
