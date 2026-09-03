@@ -5,7 +5,7 @@ import re
 import subprocess
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
-from aiogram.types import FSInputFile, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web
@@ -45,7 +45,7 @@ def main_menu():
     kb = [
         [KeyboardButton(text="📥 دانلودر شبکه‌های اجتماعی"), KeyboardButton(text="🧠 هوش مصنوعی")],
         [KeyboardButton(text="📈 نرخ ارز"), KeyboardButton(text="🧮 ماشین‌حساب تبدیل ارز")],
-        [KeyboardButton(text="👤 حساب کاربری")]
+        [KeyboardButton(text="ℹ️ درباره من"), KeyboardButton(text="👤 حساب کاربری")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -68,6 +68,18 @@ def currency_picker_keyboard():
         [KeyboardButton(text="🔙 بازگشت به منوی اصلی")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+# کیبورد شیشه‌ای محاسبه‌گر در زیر نرخ ارز
+def rates_inline_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💵 دلار ➡️ افغانی", callback_data="calc_USD_AFN"),
+            InlineKeyboardButton(text="💶 یورو ➡️ افغانی", callback_data="calc_EUR_AFN")
+        ],
+        [
+            InlineKeyboardButton(text="🔀 ماشین‌حساب جامع (تبدیل هر ارز به دلخواه)", callback_data="calc_custom")
+        ]
+    ])
 
 # --- توابع پردازش و پارت‌بندی ویدیو ---
 def get_video_duration(file_path: str) -> float:
@@ -116,13 +128,15 @@ def download_video_sync(url: str, output_path: str):
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
+        # راه‌حل دائمی: خواندن فایل کوکی برای عبور قطعی از ربات‌سنج یوتیوب
+        'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'android', 'web']
+                'player_client': ['android', 'web', 'mweb']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
         }
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -164,18 +178,30 @@ async def downloader_btn(message: types.Message):
 async def ai_btn(message: types.Message):
     await message.answer("🧠 بخش هوش مصنوعی به‌زودی فعال می‌شود.")
 
+@dp.message(F.text == "ℹ️ درباره من")
+async def about_me_btn(message: types.Message):
+    about_text = (
+        "👨‍💻 **درباره سازنده و توسعه‌دهنده ربات:**\n\n"
+        "▪️ **نام:** ارسلان حافظی (Arsalan Hafizi)\n"
+        "▪️ **تاریخ تولد:** ۲۸ مهر ۱۳۷۹ (19 October 2000)\n"
+        "▪️ **تحصیلات:** دیپلم فناوری اطلاعات (کامپیوتر)\n"
+        "▪️ **شغل:** روزنامه‌نگار مستقل و تولیدکننده محتوای ویدیویی در یوتیوب 🎥\n\n"
+        "🛠 این ربات همه‌کاره با زبان پایتون و کتابخانه‌های مدرن طراحی شده است تا ابزارهای کاربردی مانند دانلودر، نرخ ارز زنده و ماشین‌حساب را در اختیار شما قرار دهد."
+    )
+    await message.answer(about_text, parse_mode="Markdown")
+
 @dp.message(F.text == "👤 حساب کاربری")
 async def profile_btn(message: types.Message):
     username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
     await message.answer(
-        f"👤 **اطلاعات حساب کاربری شما:**\n\n"
+        f"👤 **اطلاعات حساب کاربری شما در تلگرام:**\n\n"
         f"▪️ **نام:** {message.from_user.full_name}\n"
         f"▪️ **شناسه عددی:** `{message.from_user.id}`\n"
         f"▪️ **نام کاربری:** {username}",
         parse_mode="Markdown"
     )
 
-# --- بخش نرخ آنلاین ارزها (سازگار با متن دکمه‌ها) ---
+# --- بخش نرخ آنلاین ارزها همراه با دکمه محاسبه در پایین ---
 @dp.message(F.text.contains("نرخ ارز"))
 async def show_all_rates(message: types.Message):
     status_msg = await message.answer("🔄 در حال دریافت آخرین نرخ‌های زنده بازار...")
@@ -205,17 +231,31 @@ async def show_all_rates(message: types.Message):
             f"🇮🇷 **۱,۰۰۰,۰۰۰ تومان ایران:** {(toman_afn * 1000000):,.0f} افغانی 🇦🇫\n"
             f"💶 **۱ یورو به دلار:** {(1/usd_eur):.2f} USD 💵\n"
             f"🪙 **بیت‌کوین:** ${btc:,.2f}\n\n"
-            "⚡ *برای محاسبه و تبدیل دقیق هر ارز، از بخش ماشین‌حساب تبدیل ارز استفاده کنید.*"
+            "⚡ *برای محاسبه و تبادله سریع ارزها، از دکمه‌های زیر استفاده کنید:*"
         )
-        await status_msg.edit_text(text, parse_mode="Markdown")
+        await status_msg.edit_text(text, parse_mode="Markdown", reply_markup=rates_inline_keyboard())
     except Exception as e:
         logging.error(f"Error fetching rates: {e}")
         await status_msg.edit_text("❌ خطا در دریافت نرخ‌های آنلاین.")
 
+# --- مدیریت کلیک روی دکمه‌های شیشه‌ای محاسبه در زیر نرخ ارز ---
+@dp.callback_query(F.data.startswith("calc_"))
+async def inline_calc_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = callback.data
+    if data == "calc_custom":
+        await state.set_state(CurrencyState.waiting_for_from_curr)
+        await callback.message.answer("۱️⃣ **ارز مبدأ** (ارزی که دارید) را انتخاب کنید:", reply_markup=currency_picker_keyboard(), parse_mode="Markdown")
+    else:
+        _, from_c, to_c = data.split("_")
+        await state.update_data(from_code=from_c, to_code=to_c)
+        await state.set_state(CurrencyState.waiting_for_amount)
+        await callback.message.answer(f"🔢 لطفاً مقدار **{CURRENCIES.get(from_c, from_c)}** را برای تبادله و تبدیل به **{CURRENCIES.get(to_c, to_c)}** وارد کنید:")
+    await callback.answer()
+
 # --- بخش ماشین‌حساب و تبدیل ارز هوشمند ---
 @dp.message(F.text == "🧮 ماشین‌حساب تبدیل ارز")
 async def converter_section(message: types.Message):
-    await message.answer("🧮 **ماشین‌حساب هوشمند تبدیل ارز**\n\nیکی از گزینه‌های سریع زیر را انتخاب کنید یا دکمه **تبدیل ارز دلخواه** را بزنید:", reply_markup=currency_menu())
+    await message.answer("🧮 **ماشین‌حساب هوشمند و تبادله ارز**\n\nیکی از گزینه‌های سریع زیر را انتخاب کنید یا دکمه **تبدیل ارز دلخواه** را بزنید:", reply_markup=currency_menu())
 
 @dp.message(F.text == "🔀 تبدیل ارز دلخواه (هر ارزی به هر ارزی)")
 async def start_custom_conversion(message: types.Message, state: FSMContext):
@@ -231,7 +271,7 @@ async def process_from_curr(message: types.Message, state: FSMContext):
 
     await state.update_data(from_code=from_code)
     await state.set_state(CurrencyState.waiting_for_to_curr)
-    await message.answer(f"۲️⃣ قصد دارید **{CURRENCIES[from_code]}** را به چه ارزی تبدیل کنید؟ (**ارز مقصد** را انتخاب کنید):", reply_markup=currency_picker_keyboard(), parse_mode="Markdown")
+    await message.answer(f"۲️⃣ قصد دارید **{CURRENCIES[from_code]}** را به چه ارزی تبادله کنید؟ (**ارز مقصد** را انتخاب کنید):", reply_markup=currency_picker_keyboard(), parse_mode="Markdown")
 
 @dp.message(CurrencyState.waiting_for_to_curr)
 async def process_to_curr(message: types.Message, state: FSMContext):
@@ -253,9 +293,9 @@ async def process_to_curr(message: types.Message, state: FSMContext):
 
         await state.set_state(CurrencyState.waiting_for_amount)
         await status_msg.edit_text(
-            f"📊 **نرخ زنده تبدیل:**\n"
+            f"📊 **نرخ زنده تبادله:**\n"
             f"🔹 **۱ {CURRENCIES.get(from_code)}** = **{unit_price:,.2f} {CURRENCIES.get(to_code)}**\n\n"
-            f"🔢 اکنون مقدار **{CURRENCIES.get(from_code)}** را جهت تبدیل وارد کنید (مثلاً: 100):",
+            f"🔢 اکنون مقدار **{CURRENCIES.get(from_code)}** را جهت تبادله وارد کنید (مثلاً: 100):",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -286,7 +326,7 @@ async def fast_pair_select(message: types.Message, state: FSMContext):
 
         await state.set_state(CurrencyState.waiting_for_amount)
         await status_msg.edit_text(
-            f"📊 **نرخ زنده تبدیل:**\n"
+            f"📊 **نرخ زنده تبادله:**\n"
             f"🔹 **۱ {CURRENCIES.get(from_code, from_code)}** = **{unit_price:,.2f} {CURRENCIES.get(to_code, to_code)}**\n\n"
             f"🔢 اکنون مقدار **{CURRENCIES.get(from_code, from_code)}** را وارد کنید:",
             parse_mode="Markdown"
@@ -306,7 +346,7 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
     from_code = data['from_code']
     to_code = data['to_code']
 
-    status_msg = await message.answer("⏳ در حال محاسبه دقیق...")
+    status_msg = await message.answer("⏳ در حال محاسبه دقیق تبادله...")
     try:
         rates = await get_live_rates()
         from_rate = 1.0 if from_code == 'USD' else rates.get(from_code, 1.0)
@@ -316,10 +356,10 @@ async def process_conversion_amount(message: types.Message, state: FSMContext):
         result = amount * unit_price
 
         res_text = (
-            f"✅ **نتیجه محاسبه هوشمند:**\n\n"
+            f"✅ **نتیجه تبادله و محاسبات:**\n\n"
             f"📌 **نرخ مبنا:** ۱ {CURRENCIES.get(from_code, from_code)} = {unit_price:,.2f} {CURRENCIES.get(to_code, to_code)}\n"
-            f"🔹 **مقدار ورودی:** {amount:,.2f} {CURRENCIES.get(from_code, from_code)}\n"
-            f"🔸 **معادل دریافتی:** **{result:,.2f} {CURRENCIES.get(to_code, to_code)}**\n\n"
+            f"🔹 **مبلغ پرداختی:** {amount:,.2f} {CURRENCIES.get(from_code, from_code)}\n"
+            f"🔸 **مبلغ دریافتی:** **{result:,.2f} {CURRENCIES.get(to_code, to_code)}**\n\n"
             f"🔄 *محاسبه شده بر اساس نرخ زنده بازار*"
         )
         await status_msg.edit_text(res_text, parse_mode="Markdown")
@@ -358,7 +398,7 @@ async def process_video_download(message: types.Message):
 
     except Exception as e:
         logging.error(f"Download error: {e}")
-        await status_msg.edit_text("❌ دانلود ناموفق بود. ممکن است ویدیو خصوصی باشد یا پلتفرم محدودیت ایجاد کرده باشد.")
+        await status_msg.edit_text("❌ دانلود ناموفق بود. ممکن است ویدیو خصوصی باشد یا یوتیوب دسترسی سرور را محدود کرده باشد.")
 
 # --- سرور بررسی سلامت (Health Check برای Render) ---
 async def handle_health(request):
