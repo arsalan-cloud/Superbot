@@ -142,7 +142,7 @@ async def download_tiktok_api(url: str, output_path: str) -> bool:
             logging.error(f"TikTok API error: {e}")
     return False
 
-# --- دانلود پشتیبان yt-dlp همراه با کوکی و هدر ضد ۴۰۳ ---
+# --- دانلود پشتیبان yt-dlp اصلاح‌شده جهت رفع خطای 403 ---
 def download_fallback_sync(url: str, output_prefix: str):
     ydl_opts = {
         'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
@@ -152,14 +152,10 @@ def download_fallback_sync(url: str, output_prefix: str):
         'geo_bypass': True,
         'ffmpeg_location': os.path.dirname(ffmpeg_exe_path),
         'merge_output_format': 'mp4',
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-        },
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'web_creator', 'android']
+                'player_client': ['android', 'ios'],
+                'player_skip': ['webpage', 'configs']
             }
         }
     }
@@ -428,7 +424,7 @@ async def process_video_download(message: types.Message):
         if not download_success and "tiktok.com" in url:
             download_success = await download_tiktok_api(url, file_path)
 
-        # ۳. استفاده از yt-dlp هوشمند همراه با کوکی و هدر سفارشی
+        # ۳. استفاده از yt-dlp هوشمند همراه با کوکی و کلاینت‌های همراه
         if not download_success:
             downloaded = await asyncio.to_thread(download_fallback_sync, url, f"downloads/{file_id}_{message.message_id}")
             if downloaded and os.path.exists(downloaded):
