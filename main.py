@@ -90,16 +90,14 @@ def rates_inline_keyboard():
         ]
     ])
 
-# --- تابع دانلود ویدیو با پشتیبانی از فایل کوکی و دور زدن بن IP ---
+# --- تابع دانلود ویدیو ---
 def download_video_sync(url: str, output_prefix: str):
     has_cookie = os.path.exists(COOKIE_PATH)
     if has_cookie:
         logging.info("--> File cookies.txt found! Using cookies for YouTube authentication.")
-    else:
-        logging.warning("--> cookies.txt NOT found. Proceeding without cookies.")
 
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best/b',
+        'format': 'bestvideo+bestaudio/best/b',
         'outtmpl': f"{output_prefix}.%(ext)s",
         'quiet': True,
         'no_warnings': True,
@@ -107,15 +105,15 @@ def download_video_sync(url: str, output_prefix: str):
         'ffmpeg_location': os.path.dirname(ffmpeg_exe_path),
         'merge_output_format': 'mp4',
         'cookiefile': COOKIE_PATH if has_cookie else None,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'mweb', 'android', 'web']
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
-        }
     }
+
+    if not has_cookie:
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['mweb', 'ios']
+            }
+        }
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     
